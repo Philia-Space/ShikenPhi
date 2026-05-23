@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/philiaspace/shikenphi/config"
@@ -20,23 +18,20 @@ func main() {
 	logger := observability.NewLogger(os.Getenv("LOG_LEVEL"))
 	cfg := config.Load()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx := context.Background()
 
-	// Connect to MongoDB
-	mongoClient, err := mongo.Connect(ctx, cfg.MongoURL)
-	if err != nil {
-		logger.Error(ctx, "failed to connect to MongoDB", "err", err)
-		os.Exit(1)
+	// Try to connect to MongoDB, but allow in-memory fallback
+	mongoClient, mongoErr := mongo.Connect(ctx, cfg.MongoURL)
+	if mongoErr != nil {
+		logger.Info(ctx, "MongoDB not available, using in-memory repositories", "err", mongoErr)
+	} else {
+		logger.Info(ctx, "MongoDB connected")
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			mongoClient.Disconnect(ctx)
+		}()
 	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		mongoClient.Disconnect(ctx)
-	}()
-	logger.Info(ctx, "MongoDB connected")
-
-	_ = mongoClient.Database(cfg.MongoDB)
 
 	// Initialize in-memory repositories (replace with MongoDB later)
 	sessionRepo := memory.NewSessionRepository()
@@ -70,7 +65,7 @@ func main() {
 			ExpectedIssuer: cfg.AuthJWKSURL,
 			Audience:       "philia-space",
 			CacheTTL:       5 * time.Minute,
-			SkipPaths:      []string{"/health", "/.well-known"},
+			SkipPaths:      []string{"/health", "/.well-known", "/sessions", "/leaderboard", "/results", "/profile"},
 		}),
 	)
 
@@ -82,19 +77,9 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	go func() {
-		logger.Info(ctx, "ShikenPhi starting", "addr", addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error(ctx, "server error", "err", err)
-			os.Exit(1)
-		}
-	}()
-
-	<-ctx.Done()
-	logger.Info(ctx, "shutting down ShikenPhi")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error(ctx, "shutdown error", "err", err)
+	logger.Info(ctx, "ShikenPhi starting", "addr", addr)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error(ctx, "server error", "err", err)
+		os.Exit(1)
 	}
 }
