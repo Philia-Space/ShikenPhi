@@ -10,6 +10,7 @@ import (
 
 	"github.com/philiaspace/shikenphi/config"
 	"github.com/philiaspace/shikenphi/handlers"
+	"github.com/philiaspace/shikenphi/repositories/memory"
 	"github.com/philiaspace/shikenphi/repositories/mongo"
 	"github.com/philiaspace/phi-core/observability"
 	"github.com/philiaspace/phi-middleware"
@@ -35,15 +36,17 @@ func main() {
 	}()
 	logger.Info(ctx, "MongoDB connected")
 
-	db := mongoClient.Database(cfg.MongoDB)
+	_ = mongoClient.Database(cfg.MongoDB)
 
-	// Initialize repositories
-	// TODO: create actual repositories
-	_ = db
+	// Initialize in-memory repositories (replace with MongoDB later)
+	sessionRepo := memory.NewSessionRepository()
+	resultRepo := memory.NewInMemoryResultRepository()
+	statsRepo := memory.NewInMemoryUserStatsRepository()
+	leaderboardRepo := memory.NewInMemoryLeaderboardRepository()
 
 	// Initialize handlers
-	sessionHandler := handlers.NewSessionHandler()
-	resultHandler := handlers.NewResultHandler()
+	sessionHandler := handlers.NewSessionHandler(sessionRepo, resultRepo)
+	resultHandler := handlers.NewResultHandler(resultRepo, statsRepo, leaderboardRepo)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
