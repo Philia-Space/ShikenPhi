@@ -40,7 +40,7 @@ func main() {
 	leaderboardRepo := memory.NewInMemoryLeaderboardRepository()
 
 	// Initialize handlers
-	sessionHandler := handlers.NewSessionHandler(sessionRepo, resultRepo)
+	sessionHandler := handlers.NewSessionHandler(sessionRepo, resultRepo, cfg.MondaiPhiURL)
 	resultHandler := handlers.NewResultHandler(resultRepo, statsRepo, leaderboardRepo)
 
 	mux := http.NewServeMux()

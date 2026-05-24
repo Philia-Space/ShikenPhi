@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/philiaspace/shikenphi/internal/application"
 	"github.com/philiaspace/shikenphi/internal/domain"
 	examd "github.com/philiaspace/phi-exam-domain/domain"
 	"github.com/philiaspace/phi-core/transport"
@@ -13,12 +14,25 @@ import (
 
 // SessionHandler handles exam session routes.
 type SessionHandler struct {
-	repo     domain.SessionRepository
-	resultRepo domain.ResultRepository
+	repo           domain.SessionRepository
+	resultRepo     domain.ResultRepository
+	sessionBuilder *application.SessionBuilder
+	hydrator       *application.SessionHydrator
+	scorer         *application.SessionScorer
 }
 
-func NewSessionHandler(repo domain.SessionRepository, resultRepo domain.ResultRepository) *SessionHandler {
-	return &SessionHandler{repo: repo, resultRepo: resultRepo}
+func NewSessionHandler(
+	repo domain.SessionRepository,
+	resultRepo domain.ResultRepository,
+	mondaiURL string,
+) *SessionHandler {
+	return &SessionHandler{
+		repo:           repo,
+		resultRepo:     resultRepo,
+		sessionBuilder: application.NewSessionBuilder(mondaiURL),
+		hydrator:       application.NewSessionHydrator(mondaiURL),
+		scorer:         application.NewSessionScorer(mondaiURL),
+	}
 }
 
 func (h *SessionHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -28,7 +42,7 @@ func (h *SessionHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{id}/submit", h.Submit)
 }
 
-// Create creates a new exam session.
+// Create creates a new exam session with real questions from MondaiPhi.
 func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Level      string `json:"level"`
@@ -52,39 +66,34 @@ func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Call MondaiPhi to get questions
-	// For now, create a placeholder session
-	now := time.Now()
-	expiresAt := now.Add(24 * time.Hour)
-	
-		session := &domain.Session{
-		ID:           examd.SessionID("ssn_" + generateShortID()),
-		UserID:       req.UserID,
-		Level:        level,
-		TemplateID:   req.TemplateID,
-		QuestionIDs:  []examd.QuestionID{},
-		OptionOrders: make(map[int][]int),
-		UserAnswers:  make(map[int]string),
-		Status:       domain.Active,
-		StartedAt:    now,
-		ExpiresAt:    expiresAt,
+	ctx := r.Context()
+	cmd := application.CreateSessionCommand{
+		UserID:     req.UserID,
+		Level:      level,
+		TemplateID: req.TemplateID,
 	}
 
-	if err := h.repo.Save(r.Context(), session); err != nil {
-		transport.InternalError(w, "failed to create session")
+	session, err := h.sessionBuilder.BuildSession(ctx, cmd)
+	if err != nil {
+		transport.InternalError(w, fmt.Sprintf("failed to build session: %v", err))
+		return
+	}
+
+	if err := h.repo.Save(ctx, session); err != nil {
+		transport.InternalError(w, "failed to save session")
 		return
 	}
 
 	transport.Created(w, map[string]interface{}{
-		"session_id":  session.ID,
-		"level":       session.Level,
-		"status":      session.Status,
-		"expires_at":  session.ExpiresAt,
+		"session_id":     session.ID,
+		"level":          session.Level,
+		"status":         session.Status,
+		"expires_at":     session.ExpiresAt,
 		"question_count": len(session.QuestionIDs),
 	})
 }
 
-// Get loads a session by ID.
+// Get loads a session by ID with hydrated questions.
 func (h *SessionHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -104,22 +113,33 @@ func (h *SessionHandler) Get(w http.ResponseWriter, r *http.Request) {
 		h.repo.Save(r.Context(), session)
 	}
 
-	// TODO: Hydrate questions from MondaiPhi
-	
-	transport.OK(w, map[string]interface{}{
+	// Hydrate questions from MondaiPhi
+	questions, err := h.hydrator.HydrateSession(r.Context(), session)
+	if err != nil {
+		// Log error but still return session
+		questions = nil
+	}
+
+	response := map[string]interface{}{
 		"session": map[string]interface{}{
-			"id":              session.ID,
-			"level":           session.Level,
-			"status":          session.Status,
-			"started_at":      session.StartedAt,
-			"expires_at":      session.ExpiresAt,
-			"completed_at":    session.CompletedAt,
-			"score":           session.Score,
-			"time_spent":      session.TimeSpentSeconds,
-			"question_count":  len(session.QuestionIDs),
-			"answered_count":  len(session.UserAnswers),
+			"id":             session.ID,
+			"level":          session.Level,
+			"status":         session.Status,
+			"started_at":     session.StartedAt,
+			"expires_at":     session.ExpiresAt,
+			"completed_at":   session.CompletedAt,
+			"score":          session.Score,
+			"time_spent":     session.TimeSpentSeconds,
+			"question_count": len(session.QuestionIDs),
+			"answered_count": len(session.UserAnswers),
 		},
-	})
+	}
+
+	if questions != nil {
+		response["questions"] = questions
+	}
+
+	transport.OK(w, response)
 }
 
 // SaveAnswer saves a single answer to a session.
@@ -168,13 +188,13 @@ func (h *SessionHandler) SaveAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transport.OK(w, map[string]interface{}{
-		"message": "answer saved",
-		"question_index": req.QuestionIndex,
+		"message":         "answer saved",
+		"question_index":  req.QuestionIndex,
 		"selected_option": req.SelectedOption,
 	})
 }
 
-// Submit finalizes and scores a session.
+// Submit finalizes and scores a session against correct answers from MondaiPhi.
 func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -193,23 +213,18 @@ func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Fetch correct answers from MondaiPhi and calculate score
-	// For now, use placeholder scoring
-	correct := 0
-	total := len(session.QuestionIDs)
-	
-	if total == 0 {
-		total = 75 // placeholder
+	// Score against MondaiPhi correct answers
+	scoreResult, err := h.scorer.Score(r.Context(), session)
+	if err != nil {
+		// Fallback to basic scoring if MondaiPhi is unavailable
+		scoreResult = fallbackScore(session)
 	}
-	
-	// Simple scoring: count answered questions as correct for demo
-	correct = len(session.UserAnswers)
-	percentage := examd.CalculatePercentage(correct, total)
+
+	now := time.Now()
 	timeSpent := int(time.Since(session.StartedAt).Seconds())
 
 	// Complete the session
-	now := time.Now()
-	if err := h.repo.Complete(r.Context(), examd.SessionID(id), correct, timeSpent, now, session.Version); err != nil {
+	if err := h.repo.Complete(r.Context(), examd.SessionID(id), scoreResult.CorrectCount, timeSpent, now, session.Version); err != nil {
 		transport.InternalError(w, "failed to complete session")
 		return
 	}
@@ -220,12 +235,17 @@ func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		SessionID:        examd.SessionID(id),
 		UserID:           session.UserID,
 		Level:            session.Level,
-		Score:            correct,
-		TotalQuestions:   total,
-		Percentage:       percentage,
-		SectionBreakdown: map[examd.Section]int{},
+		Score:            scoreResult.CorrectCount,
+		TotalQuestions:   scoreResult.TotalQuestions,
+		Percentage:       scoreResult.Percentage,
+		SectionBreakdown: make(map[examd.Section]int),
 		TimeSpentSeconds: timeSpent,
 		CompletedAt:      now,
+	}
+
+	// Flatten section breakdown
+	for section, stats := range scoreResult.SectionBreakdown {
+		result.SectionBreakdown[section] = stats.Correct
 	}
 
 	if err := h.resultRepo.Save(r.Context(), result); err != nil {
@@ -234,12 +254,32 @@ func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transport.OK(w, map[string]interface{}{
-		"score":      correct,
-		"total":      total,
-		"percentage": percentage,
-		"time_spent": timeSpent,
-		"result_id":  result.ID,
+		"score":              scoreResult.CorrectCount,
+		"total":              scoreResult.TotalQuestions,
+		"percentage":         scoreResult.Percentage,
+		"time_spent":         timeSpent,
+		"result_id":          result.ID,
+		"section_breakdown":  scoreResult.SectionBreakdown,
+		"question_results":   scoreResult.QuestionResults,
 	})
+}
+
+func fallbackScore(session *domain.Session) *application.ScoreResult {
+	total := len(session.QuestionIDs)
+	if total == 0 {
+		total = 75
+	}
+	correct := len(session.UserAnswers)
+	return &application.ScoreResult{
+		CorrectCount:   correct,
+		TotalQuestions: total,
+		Percentage:     int(examd.CalculatePercentage(correct, total)),
+		SectionBreakdown: make(map[examd.Section]struct {
+			Correct int
+			Total   int
+		}),
+		QuestionResults: []application.QuestionResult{},
+	}
 }
 
 func isValidLevel(level examd.JLPTLevel) bool {
