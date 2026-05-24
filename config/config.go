@@ -20,7 +20,7 @@ func Load() *Config {
 		Environment:                getEnv("SHIKENPHI_ENVIRONMENT", "development"),
 		MongoURL:                   getEnv("SHIKENPHI_MONGO_URL", "mongodb://localhost:27018/shikenphi"),
 		MongoDB:                    getEnv("SHIKENPHI_MONGO_DB", "shikenphi"),
-		AuthJWKSURL:                getEnv("SHIKENPHI_AUTH_JWKS_URL", "http://localhost:8080/.well-known/jwks.json"),
+		AuthJWKSURL:                getEnv("SHIKENPHI_AUTH_JWKS_URL", "http://localhost:8080"),
 		MondaiPhiURL:               getEnv("SHIKENPHI_MONDAIPHI_URL", "http://localhost:8087"),
 		LeaderboardRefreshInterval: getEnv("SHIKENPHI_LEADERBOARD_REFRESH_INTERVAL", "5m"),
 	}

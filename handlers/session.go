@@ -10,28 +10,40 @@ import (
 	"github.com/philiaspace/shikenphi/internal/domain"
 	examd "github.com/philiaspace/phi-exam-domain/domain"
 	"github.com/philiaspace/phi-core/transport"
+	phiid "github.com/philiaspace/phi-utils/id"
 )
 
 // SessionHandler handles exam session routes.
 type SessionHandler struct {
-	repo           domain.SessionRepository
-	resultRepo     domain.ResultRepository
-	sessionBuilder *application.SessionBuilder
-	hydrator       *application.SessionHydrator
-	scorer         *application.SessionScorer
+	repo              domain.SessionRepository
+	resultRepo        domain.ResultRepository
+	statsRepo         domain.UserStatsRepository
+	leaderboardRepo   domain.LeaderboardRepository
+	achievementRepo   domain.AchievementRepository
+	sessionBuilder    *application.SessionBuilder
+	hydrator          *application.SessionHydrator
+	scorer            *application.SessionScorer
+	achievementService *application.AchievementService
 }
 
 func NewSessionHandler(
 	repo domain.SessionRepository,
 	resultRepo domain.ResultRepository,
+	statsRepo domain.UserStatsRepository,
+	leaderboardRepo domain.LeaderboardRepository,
+	achievementRepo domain.AchievementRepository,
 	mondaiURL string,
 ) *SessionHandler {
 	return &SessionHandler{
-		repo:           repo,
-		resultRepo:     resultRepo,
-		sessionBuilder: application.NewSessionBuilder(mondaiURL),
-		hydrator:       application.NewSessionHydrator(mondaiURL),
-		scorer:         application.NewSessionScorer(mondaiURL),
+		repo:               repo,
+		resultRepo:         resultRepo,
+		statsRepo:          statsRepo,
+		leaderboardRepo:    leaderboardRepo,
+		achievementRepo:    achievementRepo,
+		sessionBuilder:     application.NewSessionBuilder(mondaiURL),
+		hydrator:           application.NewSessionHydrator(mondaiURL),
+		scorer:             application.NewSessionScorer(mondaiURL),
+		achievementService: application.NewAchievementService(achievementRepo),
 	}
 }
 
@@ -231,7 +243,7 @@ func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
 
 	// Create result record
 	result := &domain.Result{
-		ID:               examd.ResultID("rst_" + generateShortID()),
+		ID:               examd.ResultID("rst_" + phiid.GenerateULID()),
 		SessionID:        examd.SessionID(id),
 		UserID:           session.UserID,
 		Level:            session.Level,
@@ -248,19 +260,59 @@ func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		result.SectionBreakdown[section] = stats.Correct
 	}
 
+	// Store question reviews for post-exam review
+	for _, qr := range scoreResult.QuestionResults {
+		result.QuestionReviews = append(result.QuestionReviews, domain.ResultQuestionReview{
+			QuestionID:    qr.QuestionID,
+			Section:       string(qr.Section),
+			UserAnswer:    qr.UserAnswer,
+			CorrectAnswer: qr.CorrectAnswer,
+			IsCorrect:     qr.IsCorrect,
+		})
+	}
+
 	if err := h.resultRepo.Save(r.Context(), result); err != nil {
 		transport.InternalError(w, "failed to save result")
 		return
 	}
 
+	if err := application.UpdateStatsAfterSubmit(r.Context(), h.statsRepo, result); err != nil {
+		transport.InternalError(w, "failed to update stats")
+		return
+	}
+
+	if err := application.UpdateStreakAfterSubmit(r.Context(), h.statsRepo, result); err != nil {
+		transport.InternalError(w, "failed to update streak")
+		return
+	}
+
+	stats, _ := h.statsRepo.FindByUserID(r.Context(), result.UserID)
+
+	var achievementsUnlocked []map[string]interface{}
+	if stats != nil {
+		newAchievements, err := h.achievementService.EvaluateAfterSubmit(r.Context(), result, stats, string(session.ID))
+		if err == nil {
+			for _, a := range newAchievements {
+				achievementsUnlocked = append(achievementsUnlocked, map[string]interface{}{
+					"code":        string(a.Achievement),
+					"unlocked_at": a.UnlockedAt,
+				})
+			}
+			if stats.TotalXP > 0 {
+				h.statsRepo.Save(r.Context(), stats)
+			}
+		}
+	}
+
 	transport.OK(w, map[string]interface{}{
-		"score":              scoreResult.CorrectCount,
-		"total":              scoreResult.TotalQuestions,
-		"percentage":         scoreResult.Percentage,
-		"time_spent":         timeSpent,
-		"result_id":          result.ID,
-		"section_breakdown":  scoreResult.SectionBreakdown,
-		"question_results":   scoreResult.QuestionResults,
+		"score":                scoreResult.CorrectCount,
+		"total":                scoreResult.TotalQuestions,
+		"percentage":           scoreResult.Percentage,
+		"time_spent":           timeSpent,
+		"result_id":            result.ID,
+		"section_breakdown":    scoreResult.SectionBreakdown,
+		"question_results":     scoreResult.QuestionResults,
+		"achievements_unlocked": achievementsUnlocked,
 	})
 }
 
@@ -289,8 +341,4 @@ func isValidLevel(level examd.JLPTLevel) bool {
 		}
 	}
 	return false
-}
-
-func generateShortID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
 }

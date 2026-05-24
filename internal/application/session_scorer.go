@@ -59,15 +59,15 @@ func (s *SessionScorer) Score(ctx context.Context, session *domain.Session) (*Sc
 	}
 
 	for i, qID := range session.QuestionIDs {
-		question, options, err := s.mondaiClient.GetQuestion(ctx, string(qID))
+		question, options, _, err := s.mondaiClient.GetQuestionForScoring(ctx, string(qID))
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch question %s: %w", qID, err)
 		}
 
-		// Find correct answer
+		// Find correct answer by matching option value to question's AnswerValue
 		var correctOption string
 		for _, opt := range options {
-			if opt.Label == "A" { // Assuming A is always correct in MondaiPhi
+			if opt.Value == question.AnswerValue {
 				correctOption = opt.Value
 				break
 			}

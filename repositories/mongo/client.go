@@ -9,7 +9,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Connect establishes a MongoDB connection.
 func Connect(ctx context.Context, uri string) (*mongo.Client, error) {
 	clientOptions := options.Client().ApplyURI(uri).
 		SetServerSelectionTimeout(5 * time.Second).
@@ -20,13 +19,16 @@ func Connect(ctx context.Context, uri string) (*mongo.Client, error) {
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
 
-	// Use a timeout context for ping to avoid hanging
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	
+
 	if err := client.Ping(pingCtx, nil); err != nil {
 		return nil, fmt.Errorf("failed to ping MongoDB: %w", err)
 	}
 
 	return client, nil
+}
+
+func collection(client *mongo.Client, dbName, collName string) *mongo.Collection {
+	return client.Database(dbName).Collection(collName)
 }

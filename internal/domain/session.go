@@ -37,51 +37,59 @@ type Session struct {
 
 // Result is the immutable record of a completed exam.
 type Result struct {
-	ID               examd.ResultID
-	SessionID        examd.SessionID
-	UserID           string
-	Level            examd.JLPTLevel
-	Score            int
-	TotalQuestions   int
-	Percentage       int
-	SectionBreakdown map[examd.Section]int
-	TimeSpentSeconds int
-	CompletedAt      time.Time
+	ID               examd.ResultID          `json:"id"`
+	SessionID        examd.SessionID         `json:"session_id"`
+	UserID           string                  `json:"user_id"`
+	Level            examd.JLPTLevel         `json:"level"`
+	Score            int                     `json:"score"`
+	TotalQuestions   int                     `json:"total_questions"`
+	Percentage       int                     `json:"percentage"`
+	SectionBreakdown map[examd.Section]int   `json:"section_breakdown"`
+	TimeSpentSeconds int                     `json:"time_spent_seconds"`
+	CompletedAt      time.Time               `json:"completed_at"`
+	QuestionReviews  []ResultQuestionReview  `json:"question_reviews"`
+}
+
+// ResultQuestionReview holds per-question scoring for post-exam review.
+type ResultQuestionReview struct {
+	QuestionID    string `json:"question_id"`
+	Section       string `json:"section"`
+	UserAnswer    string `json:"user_answer"`
+	CorrectAnswer string `json:"correct_answer"`
+	IsCorrect     bool   `json:"is_correct"`
 }
 
 // UserStats holds aggregated exam statistics for a user.
 type UserStats struct {
-	UserID               string
-	TotalExams           int
-	TotalQuestionsAnswered int
-	TotalCorrect         int
-	AvgScore             float64
-	BestScore            int
-	BestLevel            examd.JLPTLevel
-	TotalXP              int
-	CurrentRank          string
-	CurrentStreak        int
-	LongestStreak        int
-	UpdatedAt            time.Time
+	UserID                 string         `json:"user_id"`
+	TotalExams             int            `json:"total_exams"`
+	TotalQuestionsAnswered int            `json:"total_questions_answered"`
+	TotalCorrect           int            `json:"total_correct"`
+	AvgScore               float64        `json:"avg_score"`
+	BestScore              int            `json:"best_score"`
+	BestLevel              examd.JLPTLevel `json:"best_level"`
+	TotalXP               int            `json:"total_xp"`
+	CurrentRank            string         `json:"current_rank"`
+	CurrentStreak          int            `json:"current_streak"`
+	LongestStreak          int            `json:"longest_streak"`
+	UpdatedAt              time.Time      `json:"updated_at"`
 }
 
-// UserStreak tracks daily exam activity.
 type UserStreak struct {
-	UserID    string
-	Date      time.Time
-	ExamCount int
-	TotalScore int
-	IsPerfect bool
+	UserID     string    `json:"user_id"`
+	Date       time.Time `json:"date"`
+	ExamCount  int       `json:"exam_count"`
+	TotalScore int       `json:"total_score"`
+	IsPerfect  bool      `json:"is_perfect"`
 }
 
-// LeaderboardEntry is a materialized read model for rankings.
 type LeaderboardEntry struct {
-	UserID        string
-	DisplayName   string
-	TotalScore    int
-	ExamCount     int
-	AvgPercentage int
-	Period        string // "alltime" | "weekly" | "monthly"
-	Level         examd.JLPTLevel
-	UpdatedAt     time.Time
+	UserID        string         `json:"user_id"`
+	DisplayName   string         `json:"display_name"`
+	TotalScore    int            `json:"total_score"`
+	ExamCount     int            `json:"exam_count"`
+	AvgPercentage int            `json:"avg_percentage"`
+	Period        string         `json:"period"`
+	Level         examd.JLPTLevel `json:"level"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }

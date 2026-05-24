@@ -5,6 +5,7 @@ go 1.22.0
 require (
 	github.com/philiaspace/phi-core v0.0.0
 	github.com/philiaspace/phi-exam-domain v0.0.0
+	github.com/philiaspace/phi-gamification v0.0.0
 	github.com/philiaspace/phi-middleware v0.0.0
 	go.mongodb.org/mongo-driver v1.14.0
 )
@@ -27,6 +28,7 @@ require (
 replace (
 	github.com/philiaspace/phi-core => ../../libs/phi-core
 	github.com/philiaspace/phi-exam-domain => ../../libs/phi-exam-domain
+	github.com/philiaspace/phi-gamification => ../../libs/phi-gamification
 	github.com/philiaspace/phi-middleware => ../../libs/phi-middleware
 	github.com/philiaspace/phi-utils => ../../libs/phi-utils
 )

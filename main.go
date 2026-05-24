@@ -8,10 +8,12 @@ import (
 
 	"github.com/philiaspace/shikenphi/config"
 	"github.com/philiaspace/shikenphi/handlers"
-	"github.com/philiaspace/shikenphi/repositories/memory"
-	"github.com/philiaspace/shikenphi/repositories/mongo"
+	"github.com/philiaspace/shikenphi/internal/domain"
+	memory "github.com/philiaspace/shikenphi/repositories/memory"
+	mongoRepos "github.com/philiaspace/shikenphi/repositories/mongo"
 	"github.com/philiaspace/phi-core/observability"
 	"github.com/philiaspace/phi-middleware"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 func main() {
@@ -21,9 +23,11 @@ func main() {
 	ctx := context.Background()
 
 	// Try to connect to MongoDB, but allow in-memory fallback
-	mongoClient, mongoErr := mongo.Connect(ctx, cfg.MongoURL)
+	var mongoClient *mongo.Client
+	mongoClient, mongoErr := mongoRepos.Connect(ctx, cfg.MongoURL)
 	if mongoErr != nil {
 		logger.Info(ctx, "MongoDB not available, using in-memory repositories", "err", mongoErr)
+		mongoClient = nil
 	} else {
 		logger.Info(ctx, "MongoDB connected")
 		defer func() {
@@ -33,15 +37,32 @@ func main() {
 		}()
 	}
 
-	// Initialize in-memory repositories (replace with MongoDB later)
-	sessionRepo := memory.NewSessionRepository()
-	resultRepo := memory.NewInMemoryResultRepository()
-	statsRepo := memory.NewInMemoryUserStatsRepository()
-	leaderboardRepo := memory.NewInMemoryLeaderboardRepository()
+	var sessionRepo domain.SessionRepository
+	var resultRepo domain.ResultRepository
+	var statsRepo domain.UserStatsRepository
+	var leaderboardRepo domain.LeaderboardRepository
+	var achievementRepo domain.AchievementRepository
 
-	// Initialize handlers
-	sessionHandler := handlers.NewSessionHandler(sessionRepo, resultRepo, cfg.MondaiPhiURL)
-	resultHandler := handlers.NewResultHandler(resultRepo, statsRepo, leaderboardRepo)
+	if mongoClient != nil {
+		logger.Info(ctx, "Using MongoDB repositories")
+		sessionRepo = mongoRepos.NewSessionRepository(mongoClient, cfg.MongoDB)
+		resultRepo = mongoRepos.NewResultRepository(mongoClient, cfg.MongoDB)
+		statsRepo = mongoRepos.NewUserStatsRepository(mongoClient, cfg.MongoDB)
+		leaderboardRepo = mongoRepos.NewLeaderboardRepository(mongoClient, cfg.MongoDB)
+		achievementRepo = mongoRepos.NewAchievementRepository(mongoClient, cfg.MongoDB)
+	} else {
+		logger.Info(ctx, "Using in-memory repositories")
+		sessionRepo = memory.NewSessionRepository()
+		resultRepo = memory.NewInMemoryResultRepository()
+		statsRepo = memory.NewInMemoryUserStatsRepository()
+		leaderboardRepo = memory.NewInMemoryLeaderboardRepository()
+		achievementRepo = memory.NewAchievementRepository()
+	}
+
+	sessionHandler := handlers.NewSessionHandler(sessionRepo, resultRepo, statsRepo, leaderboardRepo, achievementRepo, cfg.MondaiPhiURL)
+	resultHandler := handlers.NewResultHandler(resultRepo, statsRepo, leaderboardRepo, achievementRepo, cfg.MondaiPhiURL)
+
+	go startLeaderboardRefresh(ctx, logger, leaderboardRepo, cfg.LeaderboardRefreshInterval)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -81,5 +102,29 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error(ctx, "server error", "err", err)
 		os.Exit(1)
+	}
+}
+
+func startLeaderboardRefresh(ctx context.Context, logger observability.Logger, repo domain.LeaderboardRepository, intervalStr string) {
+	interval, err := time.ParseDuration(intervalStr)
+	if err != nil {
+		interval = 5 * time.Minute
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	periods := []string{"alltime", "weekly", "monthly"}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, period := range periods {
+				if err := repo.Refresh(ctx, period); err != nil {
+					logger.Error(ctx, "leaderboard refresh failed", "period", period, "err", err)
+				}
+			}
+		}
 	}
 }

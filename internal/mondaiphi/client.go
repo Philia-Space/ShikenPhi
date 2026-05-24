@@ -27,19 +27,22 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
-// Question represents a sanitized question from MondaiPhi.
+func (c *Client) GetQuestionForScoring(ctx context.Context, id string) (*Question, []Option, []Asset, error) {
+	return c.getQuestion(ctx, id, true)
+}
+
 type Question struct {
 	ID             string   `json:"id"`
 	Level          string   `json:"level"`
 	Section        string   `json:"section"`
 	Prompt         string   `json:"prompt"`
 	Context        string   `json:"context,omitempty"`
+	AnswerValue    string   `json:"answer_value,omitempty"`
 	PassageID      string   `json:"passage_id,omitempty"`
 	SourceGroupKey string   `json:"source_group_key,omitempty"`
 	Options        []Option `json:"options,omitempty"`
 }
 
-// Option represents an answer choice.
 type Option struct {
 	ID        string `json:"id"`
 	Value     string `json:"value"`
@@ -47,7 +50,11 @@ type Option struct {
 	SortOrder int    `json:"sort_order"`
 }
 
-// Passage represents a reading/listening passage.
+type Asset struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
 type Passage struct {
 	ID            string `json:"id"`
 	PassageNumber int    `json:"passage_number"`
@@ -57,7 +64,6 @@ type Passage struct {
 	Section       string `json:"section"`
 }
 
-// PackageTemplate represents an exam blueprint.
 type PackageTemplate struct {
 	ID             string         `json:"id"`
 	Name           string         `json:"name"`
@@ -67,7 +73,6 @@ type PackageTemplate struct {
 	IsDefault      bool           `json:"is_default"`
 }
 
-// transportResponse is the envelope used by phi-core/transport.
 type transportResponse struct {
 	Success bool        `json:"success"`
 	Data    interface{} `json:"data"`
@@ -136,41 +141,50 @@ func (c *Client) ListQuestions(ctx context.Context, level examd.JLPTLevel, secti
 	return questions, nil
 }
 
-// GetQuestion fetches a single question with options.
-func (c *Client) GetQuestion(ctx context.Context, id string) (*Question, []Option, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/questions/"+id, nil)
+// GetQuestion fetches a single question with options and assets (sanitized).
+func (c *Client) GetQuestion(ctx context.Context, id string) (*Question, []Option, []Asset, error) {
+	return c.getQuestion(ctx, id, false)
+}
+
+func (c *Client) getQuestion(ctx context.Context, id string, includeAnswer bool) (*Question, []Option, []Asset, error) {
+	path := "/questions/" + id
+	if includeAnswer {
+		path = "/internal/questions/" + id
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("mondaiphi returned %d", resp.StatusCode)
+		return nil, nil, nil, fmt.Errorf("mondaiphi returned %d", resp.StatusCode)
 	}
 
 	var envelope transportResponse
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	if !envelope.Success {
-		return nil, nil, fmt.Errorf("mondaiphi error: %v", envelope.Error)
+		return nil, nil, nil, fmt.Errorf("mondaiphi error: %v", envelope.Error)
 	}
 
 	dataMap, ok := envelope.Data.(map[string]interface{})
 	if !ok {
-		return nil, nil, fmt.Errorf("unexpected data format")
+		return nil, nil, nil, fmt.Errorf("unexpected data format")
 	}
 
 	qBytes, _ := json.Marshal(dataMap["question"])
 	var question Question
 	if err := json.Unmarshal(qBytes, &question); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var options []Option
@@ -184,7 +198,18 @@ func (c *Client) GetQuestion(ctx context.Context, id string) (*Question, []Optio
 		}
 	}
 
-	return &question, options, nil
+	var assets []Asset
+	if assetsRaw, ok := dataMap["assets"].([]interface{}); ok {
+		for _, a := range assetsRaw {
+			aBytes, _ := json.Marshal(a)
+			var asset Asset
+			if err := json.Unmarshal(aBytes, &asset); err == nil {
+				assets = append(assets, asset)
+			}
+		}
+	}
+
+	return &question, options, assets, nil
 }
 
 // ListTemplates fetches package templates.
@@ -244,6 +269,33 @@ func (c *Client) ListTemplates(ctx context.Context, level examd.JLPTLevel) ([]Pa
 	}
 
 	return templates, nil
+}
+
+// GetAssetURL follows the MondaiPhi asset redirect to get the final S3 presigned URL.
+func (c *Client) GetAssetURL(ctx context.Context, assetID string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/assets/"+assetID, nil)
+	if err != nil {
+		return "", err
+	}
+
+	transportClient := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := transportClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusTemporaryRedirect || resp.StatusCode == http.StatusFound {
+		return resp.Header.Get("Location"), nil
+	}
+
+	return "", fmt.Errorf("asset %s returned status %d", assetID, resp.StatusCode)
 }
 
 // GetPassage fetches a passage with its questions.

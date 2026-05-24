@@ -22,17 +22,36 @@ func NewSessionHydrator(mondaiURL string) *SessionHydrator {
 
 // HydratedQuestion is a question ready for the frontend.
 type HydratedQuestion struct {
-	Index          int               `json:"index"`
-	ID             string            `json:"id"`
-	Level          string            `json:"level"`
-	Section        string            `json:"section"`
-	Prompt         string            `json:"prompt"`
-	Context        string            `json:"context,omitempty"`
-	PassageID      string            `json:"passage_id,omitempty"`
-	Passage        *mondaiphi.Passage `json:"passage,omitempty"`
-	SourceGroupKey string            `json:"source_group_key,omitempty"`
-	Options        []string          `json:"options"` // Shuffled display order
-	UserAnswer     string            `json:"user_answer,omitempty"`
+	Index          int                `json:"index"`
+	ID             string             `json:"id"`
+	Level          string             `json:"level"`
+	Section        string             `json:"section"`
+	Prompt         string             `json:"prompt"`
+	Context        string             `json:"context,omitempty"`
+	PassageID      string             `json:"passage_id,omitempty"`
+	Passage        *HydratedPassage   `json:"passage,omitempty"`
+	SourceGroupKey string             `json:"source_group_key,omitempty"`
+	Options        []HydratedOption   `json:"options"`
+	Assets         []HydratedAsset    `json:"assets,omitempty"`
+	UserAnswer     string             `json:"user_answer,omitempty"`
+}
+
+// HydratedOption is a shuffled answer choice for the frontend.
+type HydratedOption struct {
+	ID    string `json:"id"`
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// HydratedAsset is a question asset for the frontend.
+type HydratedAsset struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
+}
+
+// HydratedPassage is a passage for the frontend.
+type HydratedPassage struct {
+	Content string `json:"content"`
 }
 
 // HydrateSession fetches all questions for a session and applies option shuffling.
@@ -40,28 +59,53 @@ func (h *SessionHydrator) HydrateSession(ctx context.Context, session *domain.Se
 	var hydrated []HydratedQuestion
 
 	for i, qID := range session.QuestionIDs {
-		question, options, err := h.mondaiClient.GetQuestion(ctx, string(qID))
+		question, options, assets, err := h.mondaiClient.GetQuestion(ctx, string(qID))
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch question %s: %w", qID, err)
 		}
 
-		// Apply option order from session
-		shuffledOptions := make([]string, len(options))
 		order := session.OptionOrders[i]
-		if len(order) != len(options) {
-			// Fallback: use original order
-			for j, opt := range options {
-				shuffledOptions[j] = opt.Value
+		var shuffledOptions []HydratedOption
+
+		if len(order) > 0 && len(order) <= len(options) {
+			optionMap := make(map[string]mondaiphi.Option)
+			for _, opt := range options {
+				optionMap[opt.Value] = opt
 			}
-		} else {
-			for j, optValue := range order {
-				for _, opt := range options {
-					if opt.Value == fmt.Sprintf("%d", optValue) {
-						shuffledOptions[j] = opt.Value
-						break
-					}
+			for _, optValue := range order {
+				if opt, ok := optionMap[fmt.Sprintf("%d", optValue)]; ok {
+					shuffledOptions = append(shuffledOptions, HydratedOption{
+						ID:    opt.ID,
+						Value: opt.Value,
+						Label: opt.Label,
+					})
 				}
 			}
+		}
+
+		if len(shuffledOptions) == 0 {
+			for _, opt := range options {
+				shuffledOptions = append(shuffledOptions, HydratedOption{
+					ID:    opt.ID,
+					Value: opt.Value,
+					Label: opt.Label,
+				})
+			}
+		}
+
+		var hydratedAssets []HydratedAsset
+		for _, a := range assets {
+			url := ""
+			if a.ID != "" {
+				resolved, err := h.mondaiClient.GetAssetURL(ctx, a.ID)
+				if err == nil {
+					url = resolved
+				}
+			}
+			hydratedAssets = append(hydratedAssets, HydratedAsset{
+				Type: a.Type,
+				URL:  url,
+			})
 		}
 
 		hq := HydratedQuestion{
@@ -74,17 +118,19 @@ func (h *SessionHydrator) HydrateSession(ctx context.Context, session *domain.Se
 			PassageID:      question.PassageID,
 			SourceGroupKey: question.SourceGroupKey,
 			Options:        shuffledOptions,
+			Assets:         hydratedAssets,
 		}
 
 		if ans, ok := session.UserAnswers[i]; ok {
 			hq.UserAnswer = ans
 		}
 
-		// Fetch passage if present
 		if question.PassageID != "" {
 			passage, _, err := h.mondaiClient.GetPassage(ctx, question.PassageID)
 			if err == nil {
-				hq.Passage = passage
+				hq.Passage = &HydratedPassage{
+					Content: passage.Content,
+				}
 			}
 		}
 
