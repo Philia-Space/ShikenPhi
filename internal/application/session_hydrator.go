@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/philiaspace/shikenphi/internal/domain"
 	"github.com/philiaspace/shikenphi/internal/mondaiphi"
@@ -14,9 +15,9 @@ type SessionHydrator struct {
 }
 
 // NewSessionHydrator creates a hydrator.
-func NewSessionHydrator(mondaiURL string) *SessionHydrator {
+func NewSessionHydrator(mondaiURL string, serviceSecret ...string) *SessionHydrator {
 	return &SessionHydrator{
-		mondaiClient: mondaiphi.NewClient(mondaiURL),
+		mondaiClient: mondaiphi.NewClient(mondaiURL, serviceSecret...),
 	}
 }
 
@@ -55,25 +56,52 @@ type HydratedPassage struct {
 }
 
 // HydrateSession fetches all questions for a session and applies option shuffling.
+// Uses a worker pool (max 10 concurrent) to avoid overwhelming MondaiPhi.
 func (h *SessionHydrator) HydrateSession(ctx context.Context, session *domain.Session) ([]HydratedQuestion, error) {
-	var hydrated []HydratedQuestion
+	hydrated := make([]HydratedQuestion, len(session.QuestionIDs))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var firstErr error
+
+	sem := make(chan struct{}, 10) // max 10 concurrent requests
 
 	for i, qID := range session.QuestionIDs {
-		question, options, assets, err := h.mondaiClient.GetQuestion(ctx, string(qID))
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch question %s: %w", qID, err)
-		}
+		wg.Add(1)
+		go func(idx int, questionID string) {
+			sem <- struct{}{}        // acquire slot
+			defer func() { <-sem }() // release slot
+			defer wg.Done()
 
-		order := session.OptionOrders[i]
-		var shuffledOptions []HydratedOption
-
-		if len(order) > 0 && len(order) <= len(options) {
-			optionMap := make(map[string]mondaiphi.Option)
-			for _, opt := range options {
-				optionMap[opt.Value] = opt
+			question, options, assets, err := h.mondaiClient.GetQuestion(ctx, questionID)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("failed to fetch question %s: %w", questionID, err)
+				}
+				mu.Unlock()
+				return
 			}
-			for _, optValue := range order {
-				if opt, ok := optionMap[fmt.Sprintf("%d", optValue)]; ok {
+
+			// Shuffle options
+			order := session.OptionOrders[idx]
+			var shuffledOptions []HydratedOption
+			if len(order) > 0 && len(order) <= len(options) {
+				optionMap := make(map[string]mondaiphi.Option)
+				for _, opt := range options {
+					optionMap[opt.Value] = opt
+				}
+				for _, optValue := range order {
+					if opt, ok := optionMap[fmt.Sprintf("%d", optValue)]; ok {
+						shuffledOptions = append(shuffledOptions, HydratedOption{
+							ID:    opt.ID,
+							Value: opt.Value,
+							Label: opt.Label,
+						})
+					}
+				}
+			}
+			if len(shuffledOptions) == 0 {
+				for _, opt := range options {
 					shuffledOptions = append(shuffledOptions, HydratedOption{
 						ID:    opt.ID,
 						Value: opt.Value,
@@ -81,61 +109,64 @@ func (h *SessionHydrator) HydrateSession(ctx context.Context, session *domain.Se
 					})
 				}
 			}
-		}
 
-		if len(shuffledOptions) == 0 {
-			for _, opt := range options {
-				shuffledOptions = append(shuffledOptions, HydratedOption{
-					ID:    opt.ID,
-					Value: opt.Value,
-					Label: opt.Label,
-				})
+			// Fetch assets concurrently
+			var hydratedAssets []HydratedAsset
+			if len(assets) > 0 {
+				assetResults := make([]HydratedAsset, len(assets))
+				var assetWg sync.WaitGroup
+				for ai, a := range assets {
+					assetWg.Add(1)
+					go func(aIdx int, asset mondaiphi.Asset) {
+						defer assetWg.Done()
+						url := ""
+						if asset.ID != "" {
+							resolved, err := h.mondaiClient.GetAssetURL(ctx, asset.ID)
+							if err == nil {
+								url = resolved
+							}
+						}
+						assetResults[aIdx] = HydratedAsset{Type: asset.Type, URL: url}
+					}(ai, a)
+				}
+				assetWg.Wait()
+				hydratedAssets = assetResults
 			}
-		}
 
-		var hydratedAssets []HydratedAsset
-		for _, a := range assets {
-			url := ""
-			if a.ID != "" {
-				resolved, err := h.mondaiClient.GetAssetURL(ctx, a.ID)
+			hq := HydratedQuestion{
+				Index:          idx,
+				ID:             question.ID,
+				Level:          question.Level,
+				Section:        question.Section,
+				Prompt:         question.Prompt,
+				Context:        question.Context,
+				PassageID:      question.PassageID,
+				SourceGroupKey: question.SourceGroupKey,
+				Options:        shuffledOptions,
+				Assets:         hydratedAssets,
+			}
+
+			if ans, ok := session.UserAnswers[idx]; ok {
+				hq.UserAnswer = ans
+			}
+
+			// Fetch passage if needed
+			if question.PassageID != "" {
+				passage, _, err := h.mondaiClient.GetPassage(ctx, question.PassageID)
 				if err == nil {
-					url = resolved
+					hq.Passage = &HydratedPassage{Content: passage.Content}
 				}
 			}
-			hydratedAssets = append(hydratedAssets, HydratedAsset{
-				Type: a.Type,
-				URL:  url,
-			})
-		}
 
-		hq := HydratedQuestion{
-			Index:          i,
-			ID:             question.ID,
-			Level:          question.Level,
-			Section:        question.Section,
-			Prompt:         question.Prompt,
-			Context:        question.Context,
-			PassageID:      question.PassageID,
-			SourceGroupKey: question.SourceGroupKey,
-			Options:        shuffledOptions,
-			Assets:         hydratedAssets,
-		}
-
-		if ans, ok := session.UserAnswers[i]; ok {
-			hq.UserAnswer = ans
-		}
-
-		if question.PassageID != "" {
-			passage, _, err := h.mondaiClient.GetPassage(ctx, question.PassageID)
-			if err == nil {
-				hq.Passage = &HydratedPassage{
-					Content: passage.Content,
-				}
-			}
-		}
-
-		hydrated = append(hydrated, hq)
+			mu.Lock()
+			hydrated[idx] = hq
+			mu.Unlock()
+		}(i, string(qID))
 	}
 
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
 	return hydrated, nil
 }

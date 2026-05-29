@@ -10,6 +10,7 @@ type Config struct {
 	MongoDB                   string
 	AuthJWKSURL               string
 	MondaiPhiURL              string
+	MondaiPhiServiceSecret    string
 	LeaderboardRefreshInterval string
 }
 
@@ -22,6 +23,7 @@ func Load() *Config {
 		MongoDB:                    getEnv("SHIKENPHI_MONGO_DB", "shikenphi"),
 		AuthJWKSURL:                getEnv("SHIKENPHI_AUTH_JWKS_URL", "http://localhost:8080"),
 		MondaiPhiURL:               getEnv("SHIKENPHI_MONDAIPHI_URL", "http://localhost:8087"),
+		MondaiPhiServiceSecret:    getEnv("SHIKENPHI_MONDAIPHI_SERVICE_SECRET", "dev-service-secret-change-in-production"),
 		LeaderboardRefreshInterval: getEnv("SHIKENPHI_LEADERBOARD_REFRESH_INTERVAL", "5m"),
 	}
 }

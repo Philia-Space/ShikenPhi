@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/philiaspace/shikenphi/internal/mondaiphi"
 	examd "github.com/philiaspace/phi-exam-domain/domain"
 	"github.com/philiaspace/phi-core/transport"
+	middleware "github.com/philiaspace/phi-middleware"
 )
 
 type ResultHandler struct {
@@ -21,15 +23,27 @@ type ResultHandler struct {
 	mondaiClient    *mondaiphi.Client
 }
 
-func NewResultHandler(resultRepo domain.ResultRepository, statsRepo domain.UserStatsRepository, leaderboardRepo domain.LeaderboardRepository, achievementRepo domain.AchievementRepository, mondaiURL string) *ResultHandler {
+func NewResultHandler(resultRepo domain.ResultRepository, statsRepo domain.UserStatsRepository, leaderboardRepo domain.LeaderboardRepository, achievementRepo domain.AchievementRepository, mondaiURL string, mondaiSecret ...string) *ResultHandler {
+	secret := ""
+	if len(mondaiSecret) > 0 {
+		secret = mondaiSecret[0]
+	}
 	return &ResultHandler{
 		resultRepo:      resultRepo,
 		statsRepo:       statsRepo,
 		leaderboardRepo: leaderboardRepo,
 		achievementRepo: achievementRepo,
-		hydrator:        application.NewSessionHydrator(mondaiURL),
-		mondaiClient:    mondaiphi.NewClient(mondaiURL),
+		hydrator:        application.NewSessionHydrator(mondaiURL, secret),
+		mondaiClient:    mondaiphi.NewClient(mondaiURL, secret),
 	}
+}
+
+func getUserID(r *http.Request) (string, error) {
+	claims, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		return "", fmt.Errorf("unauthorized")
+	}
+	return claims.UserID, nil
 }
 
 func (h *ResultHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -44,9 +58,10 @@ func (h *ResultHandler) RegisterRoutes(mux *http.ServeMux) {
 
 // List returns the user's result history.
 func (h *ResultHandler) List(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		transport.BadRequest(w, "user_id is required")
+	userID, err := getUserID(r)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"authentication required"}}`))
 		return
 	}
 
@@ -64,6 +79,13 @@ func (h *ResultHandler) List(w http.ResponseWriter, r *http.Request) {
 
 // Get returns a single result by result ID or session ID.
 func (h *ResultHandler) Get(w http.ResponseWriter, r *http.Request) {
+	userID, err := getUserID(r)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"authentication required"}}`))
+		return
+	}
+
 	id := r.PathValue("id")
 	if id == "" {
 		transport.BadRequest(w, "result id is required")
@@ -71,7 +93,6 @@ func (h *ResultHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result *domain.Result
-	var err error
 
 	if len(id) > 4 && id[:4] == "rst_" {
 		result, err = h.resultRepo.FindByID(r.Context(), id)
@@ -81,6 +102,12 @@ func (h *ResultHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		transport.FromError(w, err)
+		return
+	}
+
+	// Ownership check
+	if result.UserID != userID {
+		transport.Forbidden(w, "access denied")
 		return
 	}
 
@@ -113,9 +140,10 @@ func (h *ResultHandler) Leaderboard(w http.ResponseWriter, r *http.Request) {
 
 // Stats returns user statistics.
 func (h *ResultHandler) Stats(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		transport.BadRequest(w, "user_id is required")
+	userID, err := getUserID(r)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"authentication required"}}`))
 		return
 	}
 
@@ -137,9 +165,10 @@ func (h *ResultHandler) Stats(w http.ResponseWriter, r *http.Request) {
 
 // Streaks returns daily streak data.
 func (h *ResultHandler) Streaks(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		transport.BadRequest(w, "user_id is required")
+	userID, err := getUserID(r)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"authentication required"}}`))
 		return
 	}
 
@@ -161,6 +190,13 @@ func (h *ResultHandler) Streaks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ResultHandler) Review(w http.ResponseWriter, r *http.Request) {
+	userID, err := getUserID(r)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"authentication required"}}`))
+		return
+	}
+
 	id := r.PathValue("id")
 	if id == "" {
 		transport.BadRequest(w, "result id is required")
@@ -168,7 +204,6 @@ func (h *ResultHandler) Review(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result *domain.Result
-	var err error
 
 	if len(id) > 4 && id[:4] == "rst_" {
 		result, err = h.resultRepo.FindByID(r.Context(), id)
@@ -178,6 +213,12 @@ func (h *ResultHandler) Review(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		transport.FromError(w, err)
+		return
+	}
+
+	// Ownership check
+	if result.UserID != userID {
+		transport.Forbidden(w, "access denied")
 		return
 	}
 
@@ -243,9 +284,10 @@ func (h *ResultHandler) Review(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ResultHandler) Achievements(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		transport.BadRequest(w, "user_id is required")
+	userID, err := getUserID(r)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","message":"authentication required"}}`))
 		return
 	}
 

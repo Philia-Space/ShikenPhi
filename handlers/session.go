@@ -10,6 +10,7 @@ import (
 	"github.com/philiaspace/shikenphi/internal/domain"
 	examd "github.com/philiaspace/phi-exam-domain/domain"
 	"github.com/philiaspace/phi-core/transport"
+	middleware "github.com/philiaspace/phi-middleware"
 	phiid "github.com/philiaspace/phi-utils/id"
 )
 
@@ -33,16 +34,21 @@ func NewSessionHandler(
 	leaderboardRepo domain.LeaderboardRepository,
 	achievementRepo domain.AchievementRepository,
 	mondaiURL string,
+	mondaiSecret ...string,
 ) *SessionHandler {
+	secret := ""
+	if len(mondaiSecret) > 0 {
+		secret = mondaiSecret[0]
+	}
 	return &SessionHandler{
 		repo:               repo,
 		resultRepo:         resultRepo,
 		statsRepo:          statsRepo,
 		leaderboardRepo:    leaderboardRepo,
 		achievementRepo:    achievementRepo,
-		sessionBuilder:     application.NewSessionBuilder(mondaiURL),
-		hydrator:           application.NewSessionHydrator(mondaiURL),
-		scorer:             application.NewSessionScorer(mondaiURL),
+		sessionBuilder:     application.NewSessionBuilder(mondaiURL, secret),
+		hydrator:           application.NewSessionHydrator(mondaiURL, secret),
+		scorer:             application.NewSessionScorer(mondaiURL, secret),
 		achievementService: application.NewAchievementService(achievementRepo),
 	}
 }
@@ -56,10 +62,17 @@ func (h *SessionHandler) RegisterRoutes(mux *http.ServeMux) {
 
 // Create creates a new exam session with real questions from MondaiPhi.
 func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
+	// Extract user identity from JWT claims
+	claims, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		transport.Unauthorized(w, "authentication required")
+		return
+	}
+	userID := claims.UserID
+
 	var req struct {
 		Level      string `json:"level"`
 		TemplateID string `json:"template_id"`
-		UserID     string `json:"user_id"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -80,7 +93,7 @@ func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	cmd := application.CreateSessionCommand{
-		UserID:     req.UserID,
+		UserID:     userID,
 		Level:      level,
 		TemplateID: req.TemplateID,
 	}
@@ -107,6 +120,12 @@ func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // Get loads a session by ID with hydrated questions.
 func (h *SessionHandler) Get(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		transport.Unauthorized(w, "authentication required")
+		return
+	}
+
 	id := r.PathValue("id")
 	if id == "" {
 		transport.BadRequest(w, "session id is required")
@@ -116,6 +135,12 @@ func (h *SessionHandler) Get(w http.ResponseWriter, r *http.Request) {
 	session, err := h.repo.FindByID(r.Context(), id)
 	if err != nil {
 		transport.FromError(w, err)
+		return
+	}
+
+	// Ownership check
+	if session.UserID != claims.UserID {
+		transport.Forbidden(w, "access denied")
 		return
 	}
 
@@ -156,6 +181,12 @@ func (h *SessionHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 // SaveAnswer saves a single answer to a session.
 func (h *SessionHandler) SaveAnswer(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		transport.Unauthorized(w, "authentication required")
+		return
+	}
+
 	id := r.PathValue("id")
 	if id == "" {
 		transport.BadRequest(w, "session id is required")
@@ -175,6 +206,12 @@ func (h *SessionHandler) SaveAnswer(w http.ResponseWriter, r *http.Request) {
 	session, err := h.repo.FindByID(r.Context(), id)
 	if err != nil {
 		transport.FromError(w, err)
+		return
+	}
+
+	// Ownership check
+	if session.UserID != claims.UserID {
+		transport.Forbidden(w, "access denied")
 		return
 	}
 
@@ -208,6 +245,12 @@ func (h *SessionHandler) SaveAnswer(w http.ResponseWriter, r *http.Request) {
 
 // Submit finalizes and scores a session against correct answers from MondaiPhi.
 func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		transport.Unauthorized(w, "authentication required")
+		return
+	}
+
 	id := r.PathValue("id")
 	if id == "" {
 		transport.BadRequest(w, "session id is required")
@@ -220,6 +263,12 @@ func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership check
+	if session.UserID != claims.UserID {
+		transport.Forbidden(w, "access denied")
+		return
+	}
+
 	if session.Status != domain.Active {
 		transport.BadRequest(w, "session is not active")
 		return
@@ -228,8 +277,8 @@ func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	// Score against MondaiPhi correct answers
 	scoreResult, err := h.scorer.Score(r.Context(), session)
 	if err != nil {
-		// Fallback to basic scoring if MondaiPhi is unavailable
-		scoreResult = fallbackScore(session)
+		transport.InternalError(w, "scoring service unavailable, please retry later")
+		return
 	}
 
 	now := time.Now()
@@ -314,24 +363,6 @@ func (h *SessionHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		"question_results":     scoreResult.QuestionResults,
 		"achievements_unlocked": achievementsUnlocked,
 	})
-}
-
-func fallbackScore(session *domain.Session) *application.ScoreResult {
-	total := len(session.QuestionIDs)
-	if total == 0 {
-		total = 75
-	}
-	correct := len(session.UserAnswers)
-	return &application.ScoreResult{
-		CorrectCount:   correct,
-		TotalQuestions: total,
-		Percentage:     int(examd.CalculatePercentage(correct, total)),
-		SectionBreakdown: make(map[examd.Section]struct {
-			Correct int
-			Total   int
-		}),
-		QuestionResults: []application.QuestionResult{},
-	}
 }
 
 func isValidLevel(level examd.JLPTLevel) bool {

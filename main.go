@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/philiaspace/shikenphi/config"
@@ -20,7 +22,9 @@ func main() {
 	logger := observability.NewLogger(os.Getenv("LOG_LEVEL"))
 	cfg := config.Load()
 
-	ctx := context.Background()
+	// Use signal-aware context for graceful shutdown
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Try to connect to MongoDB, but allow in-memory fallback
 	var mongoClient *mongo.Client
@@ -59,8 +63,8 @@ func main() {
 		achievementRepo = memory.NewAchievementRepository()
 	}
 
-	sessionHandler := handlers.NewSessionHandler(sessionRepo, resultRepo, statsRepo, leaderboardRepo, achievementRepo, cfg.MondaiPhiURL)
-	resultHandler := handlers.NewResultHandler(resultRepo, statsRepo, leaderboardRepo, achievementRepo, cfg.MondaiPhiURL)
+	sessionHandler := handlers.NewSessionHandler(sessionRepo, resultRepo, statsRepo, leaderboardRepo, achievementRepo, cfg.MondaiPhiURL, cfg.MondaiPhiServiceSecret)
+	resultHandler := handlers.NewResultHandler(resultRepo, statsRepo, leaderboardRepo, achievementRepo, cfg.MondaiPhiURL, cfg.MondaiPhiServiceSecret)
 
 	go startLeaderboardRefresh(ctx, logger, leaderboardRepo, cfg.LeaderboardRefreshInterval)
 
@@ -86,7 +90,7 @@ func main() {
 			ExpectedIssuer: cfg.AuthJWKSURL,
 			Audience:       "philia-space",
 			CacheTTL:       5 * time.Minute,
-			SkipPaths:      []string{"/health", "/.well-known", "/sessions", "/leaderboard", "/results", "/profile"},
+			SkipPaths:      []string{"/health"},
 		}),
 	)
 
@@ -99,9 +103,19 @@ func main() {
 	}
 
 	logger.Info(ctx, "ShikenPhi starting", "addr", addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error(ctx, "server error", "err", err)
-		os.Exit(1)
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error(ctx, "server error", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Info(ctx, "shutting down ShikenPhi")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error(ctx, "shutdown error", "err", err)
 	}
 }
 

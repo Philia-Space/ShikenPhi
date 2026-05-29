@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/philiaspace/shikenphi/internal/domain"
 	"github.com/philiaspace/shikenphi/internal/mondaiphi"
@@ -15,9 +16,9 @@ type SessionScorer struct {
 }
 
 // NewSessionScorer creates a scorer.
-func NewSessionScorer(mondaiURL string) *SessionScorer {
+func NewSessionScorer(mondaiURL string, serviceSecret ...string) *SessionScorer {
 	return &SessionScorer{
-		mondaiClient: mondaiphi.NewClient(mondaiURL),
+		mondaiClient: mondaiphi.NewClient(mondaiURL, serviceSecret...),
 	}
 }
 
@@ -44,6 +45,7 @@ type QuestionResult struct {
 }
 
 // Score calculates the result for a completed session.
+// Uses a worker pool (max 10 concurrent) to avoid overwhelming MondaiPhi.
 func (s *SessionScorer) Score(ctx context.Context, session *domain.Session) (*ScoreResult, error) {
 	if len(session.QuestionIDs) == 0 {
 		return nil, fmt.Errorf("session has no questions")
@@ -58,44 +60,68 @@ func (s *SessionScorer) Score(ctx context.Context, session *domain.Session) (*Sc
 		QuestionResults: make([]QuestionResult, 0, len(session.QuestionIDs)),
 	}
 
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var firstErr error
+
+	sem := make(chan struct{}, 10) // max 10 concurrent requests
+
 	for i, qID := range session.QuestionIDs {
-		question, options, _, err := s.mondaiClient.GetQuestionForScoring(ctx, string(qID))
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch question %s: %w", qID, err)
-		}
+		wg.Add(1)
+		go func(idx int, questionID string) {
+			sem <- struct{}{}        // acquire slot
+			defer func() { <-sem }() // release slot
+			defer wg.Done()
 
-		// Find correct answer by matching option value to question's AnswerValue
-		var correctOption string
-		for _, opt := range options {
-			if opt.Value == question.AnswerValue {
-				correctOption = opt.Value
-				break
+			question, options, _, err := s.mondaiClient.GetQuestionForScoring(ctx, questionID)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("failed to fetch question %s: %w", questionID, err)
+				}
+				mu.Unlock()
+				return
 			}
-		}
 
-		userAnswer := session.UserAnswers[i]
-		isCorrect := userAnswer != "" && userAnswer == correctOption
+			// Find correct answer by matching option value to question's AnswerValue
+			var correctOption string
+			for _, opt := range options {
+				if opt.Value == question.AnswerValue {
+					correctOption = opt.Value
+					break
+				}
+			}
 
-		if isCorrect {
-			result.CorrectCount++
-		}
+			userAnswer := session.UserAnswers[idx]
+			isCorrect := userAnswer != "" && userAnswer == correctOption
 
-		section := examd.Section(question.Section)
-		secStats := result.SectionBreakdown[section]
-		secStats.Total++
-		if isCorrect {
-			secStats.Correct++
-		}
-		result.SectionBreakdown[section] = secStats
+			section := examd.Section(question.Section)
 
-		result.QuestionResults = append(result.QuestionResults, QuestionResult{
-			Index:         i,
-			QuestionID:    string(qID),
-			UserAnswer:    userAnswer,
-			CorrectAnswer: correctOption,
-			IsCorrect:     isCorrect,
-			Section:       section,
-		})
+			mu.Lock()
+			if isCorrect {
+				result.CorrectCount++
+			}
+			secStats := result.SectionBreakdown[section]
+			secStats.Total++
+			if isCorrect {
+				secStats.Correct++
+			}
+			result.SectionBreakdown[section] = secStats
+			result.QuestionResults = append(result.QuestionResults, QuestionResult{
+				Index:         idx,
+				QuestionID:    questionID,
+				UserAnswer:    userAnswer,
+				CorrectAnswer: correctOption,
+				IsCorrect:     isCorrect,
+				Section:       section,
+			})
+			mu.Unlock()
+		}(i, string(qID))
+	}
+
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
 	result.Percentage = int(examd.CalculatePercentage(result.CorrectCount, result.TotalQuestions))

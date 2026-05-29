@@ -72,6 +72,7 @@ type UserStats struct {
 	CurrentRank            string         `json:"current_rank"`
 	CurrentStreak          int            `json:"current_streak"`
 	LongestStreak          int            `json:"longest_streak"`
+	LastExamDate           time.Time      `json:"last_exam_date,omitempty"`
 	UpdatedAt              time.Time      `json:"updated_at"`
 }
 

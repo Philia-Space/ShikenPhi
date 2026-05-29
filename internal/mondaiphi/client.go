@@ -13,14 +13,20 @@ import (
 
 // Client is an HTTP client for calling MondaiPhi APIs.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL       string
+	serviceSecret string
+	httpClient    *http.Client
 }
 
 // NewClient creates a new MondaiPhi API client.
-func NewClient(baseURL string) *Client {
+func NewClient(baseURL string, serviceSecret ...string) *Client {
+	secret := ""
+	if len(serviceSecret) > 0 {
+		secret = serviceSecret[0]
+	}
 	return &Client{
-		baseURL: baseURL,
+		baseURL:       baseURL,
+		serviceSecret: secret,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -155,6 +161,11 @@ func (c *Client) getQuestion(ctx context.Context, id string, includeAnswer bool)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+
+	// Add service secret for internal endpoints
+	if includeAnswer && c.serviceSecret != "" {
+		req.Header.Set("X-Service-Secret", c.serviceSecret)
 	}
 
 	resp, err := c.httpClient.Do(req)

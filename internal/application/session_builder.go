@@ -18,9 +18,9 @@ type SessionBuilder struct {
 }
 
 // NewSessionBuilder creates a new session builder.
-func NewSessionBuilder(mondaiURL string) *SessionBuilder {
+func NewSessionBuilder(mondaiURL string, serviceSecret ...string) *SessionBuilder {
 	return &SessionBuilder{
-		mondaiClient: mondaiphi.NewClient(mondaiURL),
+		mondaiClient: mondaiphi.NewClient(mondaiURL, serviceSecret...),
 	}
 }
 
