@@ -47,6 +47,7 @@ type Question struct {
 	PassageID      string   `json:"passage_id,omitempty"`
 	SourceGroupKey string   `json:"source_group_key,omitempty"`
 	Options        []Option `json:"options,omitempty"`
+	SectionOrder   int      `json:"section_order,omitempty"`
 }
 
 type Option struct {
@@ -131,7 +132,59 @@ func (c *Client) ListQuestions(ctx context.Context, level examd.JLPTLevel, secti
 
 	questionsRaw, ok := dataMap["questions"].([]interface{})
 	if !ok {
+		if dataMap["questions"] == nil {
+			return nil, nil // No questions available
+		}
 		return nil, fmt.Errorf("questions not found in response")
+	}
+
+	var questions []Question
+	for _, q := range questionsRaw {
+		qBytes, _ := json.Marshal(q)
+		var question Question
+		if err := json.Unmarshal(qBytes, &question); err != nil {
+			continue
+		}
+		questions = append(questions, question)
+	}
+
+	return questions, nil
+}
+
+// ListExamQuestions fetches ALL questions for a specific exam (no shuffle, no limit).
+func (c *Client) ListExamQuestions(ctx context.Context, examID string) ([]Question, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/exams/"+examID+"/questions", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("mondaiphi returned %d", resp.StatusCode)
+	}
+
+	var envelope transportResponse
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return nil, err
+	}
+
+	if !envelope.Success {
+		return nil, fmt.Errorf("mondaiphi error: %v", envelope.Error)
+	}
+
+	dataMap, ok := envelope.Data.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected data format")
+	}
+
+	questionsRaw, ok := dataMap["questions"].([]interface{})
+	if !ok || questionsRaw == nil {
+		return nil, fmt.Errorf("no questions found for exam %s", examID)
 	}
 
 	var questions []Question
@@ -266,6 +319,9 @@ func (c *Client) ListTemplates(ctx context.Context, level examd.JLPTLevel) ([]Pa
 
 	templatesRaw, ok := dataMap["templates"].([]interface{})
 	if !ok {
+		if dataMap["templates"] == nil {
+			return nil, nil // No templates available
+		}
 		return nil, fmt.Errorf("templates not found in response")
 	}
 
@@ -282,7 +338,7 @@ func (c *Client) ListTemplates(ctx context.Context, level examd.JLPTLevel) ([]Pa
 	return templates, nil
 }
 
-// GetAssetURL follows the MondaiPhi asset redirect to get the final S3 presigned URL.
+// GetAssetURL follows the MondaiPhi asset redirect to get the final URL.
 func (c *Client) GetAssetURL(ctx context.Context, assetID string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/assets/"+assetID, nil)
 	if err != nil {
@@ -302,8 +358,14 @@ func (c *Client) GetAssetURL(ctx context.Context, assetID string) (string, error
 	}
 	defer resp.Body.Close()
 
+	// Redirect to presigned S3 URL
 	if resp.StatusCode == http.StatusTemporaryRedirect || resp.StatusCode == http.StatusFound {
 		return resp.Header.Get("Location"), nil
+	}
+
+	// Served directly (local file)
+	if resp.StatusCode == http.StatusOK {
+		return c.baseURL + "/assets/" + assetID, nil
 	}
 
 	return "", fmt.Errorf("asset %s returned status %d", assetID, resp.StatusCode)

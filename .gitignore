@@ -1,5 +1,47 @@
+# Environment files
 .env
+.env.local
+.env.development
+.env.production
+.env.*.local
+
+# Binary files (Go builds)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+shikenphi
+shikenphi-server
+mondaiphi
+mondaiphi-server
+authphi
+authphi-server
+server
 bin/
-*.log
+*.test
+*.out
+
+# Test/coverage
 coverage.out
 coverage.html
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (if any)
+node_modules/
+.next/
+
+# Build artifacts
+bin/

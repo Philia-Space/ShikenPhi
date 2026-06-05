@@ -73,6 +73,7 @@ func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Level      string `json:"level"`
 		TemplateID string `json:"template_id"`
+		ExamID     string `json:"exam_id"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -80,22 +81,17 @@ func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Level == "" {
-		transport.BadRequest(w, "level is required")
-		return
-	}
-
-	level := examd.JLPTLevel(req.Level)
-	if !isValidLevel(level) {
-		transport.BadRequest(w, "invalid level: must be N1, N2, N3, N4, or N5")
+	if req.ExamID == "" && req.Level == "" {
+		transport.BadRequest(w, "level or exam_id is required")
 		return
 	}
 
 	ctx := r.Context()
 	cmd := application.CreateSessionCommand{
 		UserID:     userID,
-		Level:      level,
+		Level:      examd.JLPTLevel(req.Level),
 		TemplateID: req.TemplateID,
+		ExamID:     req.ExamID,
 	}
 
 	session, err := h.sessionBuilder.BuildSession(ctx, cmd)
@@ -105,7 +101,7 @@ func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.repo.Save(ctx, session); err != nil {
-		transport.InternalError(w, "failed to save session")
+		transport.InternalError(w, fmt.Sprintf("failed to save session: %v", err))
 		return
 	}
 

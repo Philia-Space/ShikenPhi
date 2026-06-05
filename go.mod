@@ -7,6 +7,7 @@ require (
 	github.com/philiaspace/phi-exam-domain v0.0.0
 	github.com/philiaspace/phi-gamification v0.0.0
 	github.com/philiaspace/phi-middleware v0.0.0
+	github.com/philiaspace/phi-utils v0.0.0
 	go.mongodb.org/mongo-driver v1.14.0
 )
 
@@ -20,15 +21,15 @@ require (
 	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
-	golang.org/x/crypto v0.29.0 // indirect
-	golang.org/x/sync v0.9.0 // indirect
-	golang.org/x/text v0.20.0 // indirect
+	golang.org/x/crypto v0.31.0 // indirect
+	golang.org/x/sync v0.10.0 // indirect
+	golang.org/x/text v0.21.0 // indirect
 )
 
 replace (
-	github.com/philiaspace/phi-core => ../../libs/phi-core
-	github.com/philiaspace/phi-exam-domain => ../../libs/phi-exam-domain
-	github.com/philiaspace/phi-gamification => ../../libs/phi-gamification
-	github.com/philiaspace/phi-middleware => ../../libs/phi-middleware
-	github.com/philiaspace/phi-utils => ../../libs/phi-utils
+	github.com/philiaspace/phi-core => ../phi-core
+	github.com/philiaspace/phi-exam-domain => ../phi-exam-domain
+	github.com/philiaspace/phi-gamification => ../phi-gamification
+	github.com/philiaspace/phi-middleware => ../phi-middleware
+	github.com/philiaspace/phi-utils => ../phi-utils
 )
