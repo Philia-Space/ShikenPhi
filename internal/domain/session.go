@@ -23,7 +23,6 @@ type Session struct {
 	ID               examd.SessionID
 	UserID           string
 	Level            examd.JLPTLevel
-	TemplateID       string
 	QuestionIDs      []examd.QuestionID
 	OptionOrders     map[int][]int   // question index → shuffled option values
 	UserAnswers      map[int]string  // question index → selected option value

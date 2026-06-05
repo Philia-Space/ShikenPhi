@@ -71,9 +71,7 @@ func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID := claims.UserID
 
 	var req struct {
-		Level      string `json:"level"`
-		TemplateID string `json:"template_id"`
-		ExamID     string `json:"exam_id"`
+		ExamID string `json:"exam_id"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -81,17 +79,15 @@ func (h *SessionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ExamID == "" && req.Level == "" {
-		transport.BadRequest(w, "level or exam_id is required")
+	if req.ExamID == "" {
+		transport.BadRequest(w, "exam_id is required")
 		return
 	}
 
 	ctx := r.Context()
 	cmd := application.CreateSessionCommand{
-		UserID:     userID,
-		Level:      examd.JLPTLevel(req.Level),
-		TemplateID: req.TemplateID,
-		ExamID:     req.ExamID,
+		UserID: userID,
+		ExamID: req.ExamID,
 	}
 
 	session, err := h.sessionBuilder.BuildSession(ctx, cmd)

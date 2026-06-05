@@ -29,7 +29,6 @@ type sessionDoc struct {
 	ID               string              `bson:"_id"`
 	UserID           string              `bson:"user_id"`
 	Level            string              `bson:"level"`
-	TemplateID       string              `bson:"template_id"`
 	QuestionIDs      []string            `bson:"question_ids"`
 	OptionOrders      map[int][]int       `bson:"option_orders"`
 	UserAnswers      map[int]string      `bson:"user_answers"`
@@ -47,7 +46,6 @@ func toSessionDoc(s *domain.Session) *sessionDoc {
 		ID:               string(s.ID),
 		UserID:           s.UserID,
 		Level:            string(s.Level),
-		TemplateID:       s.TemplateID,
 		QuestionIDs:      toStringSlice(s.QuestionIDs),
 		OptionOrders:      s.OptionOrders,
 		UserAnswers:      s.UserAnswers,
@@ -66,7 +64,6 @@ func (d *sessionDoc) toDomain() *domain.Session {
 		ID:               examd.SessionID(d.ID),
 		UserID:           d.UserID,
 		Level:            examd.JLPTLevel(d.Level),
-		TemplateID:       d.TemplateID,
 		QuestionIDs:      toQuestionIDSlice(d.QuestionIDs),
 		OptionOrders:      d.OptionOrders,
 		UserAnswers:      d.UserAnswers,
